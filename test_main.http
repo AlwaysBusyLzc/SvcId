@@ -9,3 +9,40 @@ GET http://127.0.0.1:8000/hello/Henry
 Accept: application/json
 
 ###
+
+
+POST http://127.0.0.1:8000/svc_id/get
+Accept: application/json
+Content-Type: application/json
+
+{
+    "game_id": 1,
+    "area_id": 2,
+    "count": 10
+}
+
+
+###
+
+POST http://127.0.0.1:8000/svc_id/recycle
+Accept: application/json
+Content-Type: application/json
+
+{
+"game_id": 1,
+"area_id": 2
+}
+
+
+
+###
+
+POST http://127.0.0.1:8000/svc_id/resize
+Accept: application/json
+Content-Type: application/json
+
+{
+  "game_id": 1,
+  "area_id": 2,
+  "resize": 8
+}
