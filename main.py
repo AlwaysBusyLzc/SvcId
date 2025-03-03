@@ -22,6 +22,12 @@ sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
     db = sessionLocal()
+
+    db.execute("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    # 验证设置是否生效
+    result = db.execute("SELECT @@session.transaction_isolation").scalar()
+    print(f"当前隔离级别: {result}")  # 应输出 SERIALIZABLE
+
     try:
         yield db
     finally:
