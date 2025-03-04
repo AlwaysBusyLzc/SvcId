@@ -3,6 +3,7 @@ from datetime import datetime
 from exceptiongroup import catch
 from fastapi import FastAPI, Depends
 from sqlalchemy import create_engine, result_tuple
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker, Session
 
 from pydantic import BaseModel
@@ -12,22 +13,24 @@ from logger_config import setup_logger
 from config import settings
 import model
 from model import SvcId
+from logger_api import log_requests
+import logging
 
 app = FastAPI()
-logger = setup_logger()
+setup_logger()
+logger = logging.getLogger(__name__)
 logger.info("fastapi start!")
 
 engine = create_engine(settings.database_url)
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+app.middleware("http")(log_requests)
 
 def get_db():
     db = sessionLocal()
-
-    db.execute("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    db.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
     # 验证设置是否生效
-    result = db.execute("SELECT @@session.transaction_isolation").scalar()
-    print(f"当前隔离级别: {result}")  # 应输出 SERIALIZABLE
-
+    # result = db.execute(text("SELECT @@session.transaction_isolation")).scalar()
+    # logger.info(f"当前隔离级别: {result}")  # 应输出 SERIALIZABLE
     try:
         yield db
     finally:

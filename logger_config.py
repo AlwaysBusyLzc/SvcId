@@ -2,6 +2,7 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 import os
 from pathlib import Path
+from config import settings
 
 
 def setup_logger():
@@ -32,6 +33,13 @@ def setup_logger():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)  # 设置日志级别（生产环境建议 INFO）
     logger.addHandler(handler)
+
+    if settings.log_to_console:
+        # 同时输出到控制台
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
 
     # 可选：关闭 Uvicorn 默认的控制台日志（避免重复输出）
     uvicorn_logger = logging.getLogger("uvicorn.access")
