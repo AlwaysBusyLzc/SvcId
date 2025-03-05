@@ -1,17 +1,6 @@
 # Test your FastAPI endpoints
 
-GET http://127.0.0.1:8000/
-Accept: application/json
-
-###
-
-GET http://127.0.0.1:8000/hello/Henry
-Accept: application/json
-
-###
-
-
-POST http://127.0.0.1:8000/svc_id/get
+POST http://172.19.160.123:8000/svc_id/get
 Accept: application/json
 Content-Type: application/json
 

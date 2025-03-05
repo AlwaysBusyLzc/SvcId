@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import uvicorn
 from exceptiongroup import catch
 from fastapi import FastAPI, Depends
 from sqlalchemy import create_engine, result_tuple
@@ -21,6 +22,15 @@ setup_logger()
 logger = logging.getLogger(__name__)
 logger.info("fastapi start!")
 
+db_url_without_db, db_name = settings.database_url.rsplit("/", 1)
+# 连接到 MySQL 服务器（不指定数据库）
+engine = create_engine(db_url_without_db, echo=True)
+# 手动创建数据库（如果不存在）
+with engine.connect() as connection:
+    connection.execute(text(f"CREATE DATABASE IF NOT EXISTS {db_name};"))
+    connection.commit()
+
+# 连接到数据库
 engine = create_engine(settings.database_url)
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 app.middleware("http")(log_requests)
@@ -40,6 +50,11 @@ def get_db():
 def app_startup():
     logger.info("app startup!")
     model.Base.metadata.create_all(bind=engine)
+
+    logger.info(f"Database URL: {settings.database_url}")
+    logger.info(f"Max Svc ID: {settings.max_svc_id}")
+    logger.info(f"Log to Console: {settings.log_to_console}")
+    logger.info(f"Port: {settings.port}")
 
 
 # @app.get("/")
@@ -197,3 +212,12 @@ def svc_id_resize(req: SvcIdResize, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         return {"svc_ids": [], "err_code": 2, "err_msg": f"操作失败{e}"}
+
+
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=settings.port  # 动态读取配置的端口
+    )
