@@ -18,6 +18,6 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 #pyinstaller --onefile --add-data ".env:." main.py
-pyinstaller --onefile main.py
+pyinstaller --name svc_ids --onefile main.py
 # 拷贝 .env
 cp .env dist/
