@@ -1,5 +1,9 @@
 @echo off
 
+rd /s /q "./logs" 2>nul
+rd /s /q "./build" 2>nul
+rd /s /q "./dist" 2>nul
+
 rem 安装依赖
 rem pip install --progress-bar off --no-cache-dir -r requirements.txt -i https://pypi.douban.com/simple
 pip install --progress-bar off --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple

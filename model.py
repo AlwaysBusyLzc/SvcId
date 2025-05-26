@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, create_engine, DateTime, Boolean, Index
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.sql.operators import desc_op, asc_op
 
 Base = declarative_base()
 
@@ -16,7 +17,7 @@ class SvcId(Base):
 
     # 定义索引
     __table_args__ = (
-        Index("game_id_area_id_svc_id", "game_id", "area_id", "svc_id"),  # 索引名、字段顺序
-        Index("unique_game_area_svc_id", "game_id", "svc_id", unique=True),  # 索引名、字段顺序
+        Index("gameid_deletetime", "game_id", "delete_time", "svc_id"),  # 索引名、字段顺序
+        Index("unique_game_svc_id", "game_id", "svc_id", unique=True),  # 索引名、字段顺序
     )
 
