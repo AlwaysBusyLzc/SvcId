@@ -109,7 +109,8 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
                      ).order_by(SvcId.svc_id.asc()).limit(need_reuse_count).with_for_update().all()
 
         if len(reuse_list) < need_reuse_count:
-            raise Exception("数据库中可分配的进程实例id不足")
+            # raise Exception("数据库中可分配的进程实例id不足")
+            return {"svc_ids": [], "err_code": 1, "err_msg": "数据库中可分配的进程实例id不足"}
 
         # 重用svc_id 更新数据库
         # for item in reuse_list:
@@ -138,7 +139,7 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     new_ids.extend(reuse_ids)
     # 从小到大排序
     new_ids.sort()
-    return new_ids
+    return {"svc_ids": new_ids, "err_code": 0, "err_msg": ""}
 
 
 # class SvcIdQuery(BaseModel):
@@ -173,10 +174,13 @@ def svc_id_get(req: SvcIdGet, db: Session = Depends(get_db)):
             return {"svc_ids": [], "err_code": 0, "err_msg": ""}
         else:
             # 申请进程id
-            ids = alloc_new_ids(req.game_id, req.area_id, req.count, db)
-            db.commit()
-            return {"svc_ids": ids, "err_code": 0, "err_msg": ""}
+            ids, err_code, err_msg = alloc_new_ids(req.game_id, req.area_id, req.count, db)
+            if err_code != 0:
+                db.rollback()
+            else:
+                db.commit()
 
+            return {"svc_ids": ids, "err_code": err_code, "err_msg": err_msg}
     except SQLAlchemyError as e:
         db.rollback()
         return {"err_code": 1, "svc_ids": [], "err_msg": f"数据库错误: {e}"}
@@ -246,7 +250,11 @@ def svc_id_resize(req: SvcIdResize, db: Session = Depends(get_db)):
         add_num = req.resize - len(db_items)
         if add_num > 0:
             # 扩容
-            add_ids = alloc_new_ids(req.game_id, req.area_id, add_num, db)
+            add_ids, err_code, err_msg = alloc_new_ids(req.game_id, req.area_id, add_num, db)
+            if err_code != 0:
+                db.rollback()
+                return {"svc_ids": [], "err_code": err_code, "err_msg": err_msg}
+            db.commit()
             ids.extend(add_ids)
             ids.sort()
         else:
@@ -256,8 +264,8 @@ def svc_id_resize(req: SvcIdResize, db: Session = Depends(get_db)):
                 ids.remove(item.svc_id)
                 item.delete_time = datetime.now()
                 item.update_time = datetime.now()
+            db.commit()
 
-        db.commit()
         return {"svc_ids": ids, "err_code": 0, "err_msg": ""}
     except SQLAlchemyError as e:
         db.rollback()
