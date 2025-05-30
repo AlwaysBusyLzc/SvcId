@@ -1,6 +1,6 @@
 # Test your FastAPI endpoints
 
-POST http://172.19.160.123:8000/svc_id/get
+POST http://127.0.0.1:8000/svc_id/get
 Accept: application/json
 Content-Type: application/json
 
@@ -18,8 +18,8 @@ Accept: application/json
 Content-Type: application/json
 
 {
-"game_id": 1,
-"area_id": 2
+  "game_id": 1,
+  "area_id": 2
 }
 
 
