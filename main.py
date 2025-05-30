@@ -1,3 +1,8 @@
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, wait_fixed
+from sqlalchemy.exc import DBAPIError, OperationalError, TimeoutError, InternalError
+from contextlib import contextmanager
+from functools import partial
+
 from datetime import datetime
 
 import uvicorn
@@ -50,6 +55,44 @@ engine = create_engine(
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 app.middleware("http")(log_requests)
 
+@contextmanager
+def session_scope():
+    """提供一个独立的 session 上下文"""
+    db = sessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def retryable(func):
+    """
+    只有当 func 返回 err_code == 0 时才提交事务
+    否则回滚并抛出异常供 retry 捕获
+    """
+    @retry(
+        stop=stop_after_attempt(30),                # 最多重试 30 次
+        wait=wait_fixed(1),                       # 等待 1 秒
+        retry=retry_if_exception_type((DBAPIError, OperationalError, TimeoutError, InternalError)),     # 抛出这些异常后重试
+        reraise=True                                # 所有重试失败后抛出原始异常
+    )
+    def wrapper(*args, **kwargs):
+        with session_scope() as db:
+            try:
+                result = func(*args, db=db)
+                # 判断是否操作成功
+                if isinstance(result, dict) and result.get("err_code") == 0:
+                    db.commit()
+                else:
+                    db.rollback()
+
+                return result
+            except Exception as e:
+                db.rollback()
+                raise  # 抛出异常供 tenacity 捕获以决定是否重试
+    return wrapper
+
+
+
 def get_db():
     db = sessionLocal()
     #db.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
@@ -72,18 +115,11 @@ def app_startup():
     logger.info(f"Port: {settings.port}")
 
 
-# @app.get("/")
-# async def root():
-#     return {"message": "Hello World"}
-#
-#
-# @app.get("/hello/{name}")
-# async def say_hello(name: str):
-#     return {"message": f"Hello {name}"}
-
-
-# 给某个游戏的区服分配id列表， 同一个 game_id 分配的 svc_id不能重复
 def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
+    """
+        # 给某个版本(game_id)的游戏的区服分配id列表， 同一个 game_id 下的的 svc_id不能重复
+    """
+
     new_ids = []  # 新申请id
     reuse_ids = []  # 重用id
 
@@ -93,7 +129,7 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     # max_svc_id = max_item.svc_id if max_item else 0
     max_svc_id = (
                      db.query(func.max(SvcId.svc_id))
-                     .filter(SvcId.game_id == game_id, SvcId.delete_time == None)
+                     .filter(SvcId.game_id == game_id, SvcId.delete_time == None).with_for_update()
                      .scalar()  # 直接返回标量值
                  ) or 0  # 处理空值
 
@@ -106,18 +142,13 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     else:
         # 查询 need_reuse_count 个已删除的svc_id
         reuse_list = db.query(SvcId).filter(SvcId.game_id == game_id, SvcId.delete_time != None
-                     ).order_by(SvcId.svc_id.asc()).limit(need_reuse_count).with_for_update().all()
+                                            ).order_by(SvcId.svc_id.asc()).limit(need_reuse_count).with_for_update().all()
 
         if len(reuse_list) < need_reuse_count:
             # raise Exception("数据库中可分配的进程实例id不足")
             return {"svc_ids": [], "err_code": 1, "err_msg": "数据库中可分配的进程实例id不足"}
 
-        # 重用svc_id 更新数据库
-        # for item in reuse_list:
-        #     item.delete_time = None
-        #     item.update_time = datetime.now()
-        #     item.area_id = area_id
-
+        # 更新重用的svc_id
         reuse_ids = [item.svc_id for item in reuse_list]
         db.query(SvcId).filter(SvcId.game_id == game_id, SvcId.svc_id.in_(reuse_ids)).update(
             {"delete_time": None, "update_time": datetime.now(), "area_id": area_id},
@@ -127,10 +158,8 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
         for i in range(1, count - len(reuse_ids) + 1):
             new_ids.append(max_svc_id + i)
 
+
     # 写入新申请的svc_id
-    # for id in new_ids:
-    #     # 插入
-    #     db.add(SvcId(game_id=game_id, area_id=area_id, svc_id=id, create_time=datetime.now(), update_time=datetime.now()))
     db.bulk_insert_mappings(SvcId, [
         {"game_id": game_id, "area_id": area_id, "svc_id": id, "create_time": datetime.now(), "update_time": datetime.now()}
         for id in new_ids
@@ -164,30 +193,21 @@ class SvcIdGet(BaseModel):
 # 获取某个区服的所有进程实例id (如果有直接返回， 没有重新分配并返回)
 @app.post("/svc_id/get")
 def svc_id_get(req: SvcIdGet, db: Session = Depends(get_db)):
-    try:
-        # 查询数据库
-        db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).with_for_update().all()
-        if len(db_items) > 0:
-            return {"svc_ids": [item.svc_id for item in db_items], "err_code": 0, "err_msg": ""}
+    return do_svc_id_get(req, db = db)
 
-        if req.count == 0:
-            return {"svc_ids": [], "err_code": 0, "err_msg": ""}
-        else:
-            # 申请进程id
-            ids, err_code, err_msg = alloc_new_ids(req.game_id, req.area_id, req.count, db)
-            if err_code != 0:
-                db.rollback()
-            else:
-                db.commit()
+@retryable
+def do_svc_id_get(req: SvcIdGet, db: Session):
+    # 查询数据库
+    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).with_for_update().all()
+    if len(db_items) > 0:
+        return {"svc_ids": [item.svc_id for item in db_items], "err_code": 0, "err_msg": ""}
 
-            return {"svc_ids": ids, "err_code": err_code, "err_msg": err_msg}
-    except SQLAlchemyError as e:
-        db.rollback()
-        return {"err_code": 1, "svc_ids": [], "err_msg": f"数据库错误: {e}"}
-    except Exception as e:
-        db.rollback()
-        return {"err_code": 2, "svc_ids": [], "err_msg": f"系统错误{e}"}
-
+    if req.count == 0:
+        return {"svc_ids": [], "err_code": 0, "err_msg": ""}
+    else:
+        # 申请进程id
+        dic = alloc_new_ids(req.game_id, req.area_id, req.count, db)
+        return dic
 
 
 class SvcIdRecycle(BaseModel):
@@ -196,38 +216,28 @@ class SvcIdRecycle(BaseModel):
 
 # 回收某个区服的所有进程实例id
 @app.post("/svc_id/recycle")
-def svc_id_recycle(req:SvcIdRecycle, db: Session = Depends(get_db)):
-    try:
-        # 批量更新操作（无需先查询）
-        updated_count = (
-            db.query(SvcId)
-            .filter(
-                SvcId.game_id == req.game_id,
-                SvcId.area_id == req.area_id,
-                SvcId.delete_time == None,
+def svc_id_recycle(req: SvcIdRecycle, db: Session = Depends(get_db)):
+    return do_svc_id_recycle(req, db = db)
+
+@retryable
+def do_svc_id_recycle(req: SvcIdRecycle, db: Session):
+    # 批量更新操作（无需先查询）
+    updated_count = (
+        db.query(SvcId)
+        .filter(
+            SvcId.game_id == req.game_id,
+            SvcId.area_id == req.area_id,
+            SvcId.delete_time == None,
             )
-            .update(
-                {
-                    SvcId.delete_time: datetime.now(),
-                    SvcId.update_time: datetime.now(),
-                },
-                synchronize_session=False,  # 避免同步会话状态
-            )
+        .update(
+            {
+                SvcId.delete_time: datetime.now(),
+                SvcId.update_time: datetime.now(),
+            },
+            synchronize_session=False,  # 避免同步会话状态
         )
-
-        if updated_count == 0:
-            return {"err_code": 0, "err_msg": ""}
-
-        db.commit()
-        return {"err_code": 0, "err_msg": ""}
-
-    except SQLAlchemyError as e:
-        db.rollback()
-        return {"err_code": 1, "err_msg": f"数据库错误: {e}"}
-    except Exception as e:
-        db.rollback()
-        return {"err_code": 2, "err_msg": f"系统错误: {e}"}
-
+    )
+    return {"err_code": 0, "err_msg": ""}
 
 class SvcIdResize(BaseModel):
     game_id: int
@@ -237,42 +247,37 @@ class SvcIdResize(BaseModel):
 # 扩容或者缩容某个区服的进程实例id  返回操作后的实例id列表 (如果当前区服未分配进程id, 则不会进行任何操作)
 @app.post("/svc_id/resize")
 def svc_id_resize(req: SvcIdResize, db: Session = Depends(get_db)):
-    try:
-        # 查询数据库
-        db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).order_by(SvcId.svc_id.asc()).with_for_update().all()
-        if len(db_items) == 0:
-            return {"svc_ids": [], "err_code": 1, "err_msg": "当前区服未分配进程id，无法扩容或者缩容"}
+    return do_svc_id__resize(req, db = db)
 
-        ids = [item.svc_id for item in db_items]
-        if req.resize < 0 or len(db_items) == req.resize:
-            return {"svc_ids": ids, "err_code": 0, "err_msg": ""}
+@retryable
+def do_svc_id__resize(req: SvcIdResize, db: Session):
+    # 查询数据库
+    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).order_by(SvcId.svc_id.asc()).with_for_update().all()
+    if len(db_items) == 0:
+        return {"svc_ids": [], "err_code": 1, "err_msg": "当前区服未分配进程id，无法扩容或者缩容"}
 
-        add_num = req.resize - len(db_items)
-        if add_num > 0:
-            # 扩容
-            add_ids, err_code, err_msg = alloc_new_ids(req.game_id, req.area_id, add_num, db)
-            if err_code != 0:
-                db.rollback()
-                return {"svc_ids": [], "err_code": err_code, "err_msg": err_msg}
-            db.commit()
-            ids.extend(add_ids)
-            ids.sort()
-        else:
-            # 缩容
-            delete_items = db_items[add_num:]
-            for item in delete_items:
-                ids.remove(item.svc_id)
-                item.delete_time = datetime.now()
-                item.update_time = datetime.now()
-            db.commit()
-
+    ids = [item.svc_id for item in db_items]
+    if req.resize < 0 or len(db_items) == req.resize:
         return {"svc_ids": ids, "err_code": 0, "err_msg": ""}
-    except SQLAlchemyError as e:
-        db.rollback()
-        return {"err_code": 2, "svc_ids": [], "err_msg": f"数据库错误: {e}"}
-    except Exception as e:
-        db.rollback()
-        return {"err_code": 3, "svc_ids": [], "err_msg": f"系统错误: {e}"}
+
+    add_num = req.resize - len(db_items)
+    if add_num > 0:
+        # 扩容
+        dic = alloc_new_ids(req.game_id, req.area_id, add_num, db)
+        if dic["err_code"] != 0:
+            return {"svc_ids": ids, "err_code": dic["err_code"], "err_msg": dic["err_msg"]}
+
+        ids.extend(dic["add_ids"])
+        ids.sort()
+    else:
+        # 缩容
+        delete_items = db_items[add_num:]
+        for item in delete_items:
+            ids.remove(item.svc_id)
+            item.delete_time = datetime.now()
+            item.update_time = datetime.now()
+
+    return {"svc_ids": ids, "err_code": 0, "err_msg": ""}
 
 
 
