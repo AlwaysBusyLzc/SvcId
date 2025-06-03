@@ -48,8 +48,8 @@ engine = create_engine(
     pool_pre_ping=True,  # 自动检测连接是否存活
     echo=True,
     connect_args={
-        "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-        #"init_command": "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        # "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"
     }
 )
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -60,6 +60,7 @@ def session_scope():
     """提供一个独立的 session 上下文"""
     db = sessionLocal()
     try:
+        db.begin()
         yield db
     finally:
         db.close()
@@ -70,8 +71,8 @@ def retryable(func):
     否则回滚并抛出异常供 retry 捕获
     """
     @retry(
-        stop=stop_after_attempt(30),                # 最多重试 30 次
-        wait=wait_fixed(1),                       # 等待 1 秒
+        stop=stop_after_attempt(60),                # 最多重试次数
+        wait=wait_fixed(1),                         # 等待时间
         retry=retry_if_exception_type((DBAPIError, OperationalError, TimeoutError, InternalError)),     # 抛出这些异常后重试
         reraise=True                                # 所有重试失败后抛出原始异常
     )
@@ -93,16 +94,16 @@ def retryable(func):
 
 
 
-def get_db():
-    db = sessionLocal()
-    #db.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
-    # 验证设置是否生效
-    # result = db.execute(text("SELECT @@session.transaction_isolation")).scalar()
-    # logger.info(f"当前隔离级别: {result}")  # 应输出 SERIALIZABLE
-    try:
-        yield db
-    finally:
-        db.close()
+# def get_db():
+#     db = sessionLocal()
+#     #db.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+#     # 验证设置是否生效
+#     # result = db.execute(text("SELECT @@session.transaction_isolation")).scalar()
+#     # logger.info(f"当前隔离级别: {result}")  # 应输出 SERIALIZABLE
+#     try:
+#         yield db
+#     finally:
+#         db.close()
 
 @app.on_event("startup")
 def app_startup():
@@ -120,6 +121,12 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
         # 给某个版本(game_id)的游戏的区服分配id列表， 同一个 game_id 下的的 svc_id不能重复
     """
 
+    # 锁定整个game_id区域
+    db.execute(text(
+        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
+    ), {'game_id': game_id})
+
+
     new_ids = []  # 新申请id
     reuse_ids = []  # 重用id
 
@@ -129,7 +136,7 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     # max_svc_id = max_item.svc_id if max_item else 0
     max_svc_id = (
                      db.query(func.max(SvcId.svc_id))
-                     .filter(SvcId.game_id == game_id, SvcId.delete_time == None).with_for_update()
+                     .filter(SvcId.game_id == game_id).with_for_update()
                      .scalar()  # 直接返回标量值
                  ) or 0  # 处理空值
 
@@ -192,7 +199,7 @@ class SvcIdGet(BaseModel):
 
 # 获取某个区服的所有进程实例id (如果有直接返回， 没有重新分配并返回)
 @app.post("/svc_id/get")
-def svc_id_get(req: SvcIdGet, db: Session = Depends(get_db)):
+def svc_id_get(req: SvcIdGet, db: Session = Depends(session_scope)):
     return do_svc_id_get(req, db = db)
 
 @retryable
@@ -216,11 +223,16 @@ class SvcIdRecycle(BaseModel):
 
 # 回收某个区服的所有进程实例id
 @app.post("/svc_id/recycle")
-def svc_id_recycle(req: SvcIdRecycle, db: Session = Depends(get_db)):
+def svc_id_recycle(req: SvcIdRecycle, db: Session = Depends(session_scope)):
     return do_svc_id_recycle(req, db = db)
 
 @retryable
 def do_svc_id_recycle(req: SvcIdRecycle, db: Session):
+    # 锁定整个game_id区域
+    db.execute(text(
+        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
+    ), {'game_id': req.game_id})
+
     # 批量更新操作（无需先查询）
     updated_count = (
         db.query(SvcId)
@@ -246,11 +258,17 @@ class SvcIdResize(BaseModel):
 
 # 扩容或者缩容某个区服的进程实例id  返回操作后的实例id列表 (如果当前区服未分配进程id, 则不会进行任何操作)
 @app.post("/svc_id/resize")
-def svc_id_resize(req: SvcIdResize, db: Session = Depends(get_db)):
-    return do_svc_id__resize(req, db = db)
+def svc_id_resize(req: SvcIdResize, db: Session = Depends(session_scope)):
+    return do_svc_id_resize(req, db = db)
 
 @retryable
-def do_svc_id__resize(req: SvcIdResize, db: Session):
+def do_svc_id_resize(req: SvcIdResize, db: Session):
+    # 锁定整个game_id区域
+    db.execute(text(
+        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
+    ), {'game_id': req.game_id})
+
+
     # 查询数据库
     db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).order_by(SvcId.svc_id.asc()).with_for_update().all()
     if len(db_items) == 0:
@@ -267,7 +285,7 @@ def do_svc_id__resize(req: SvcIdResize, db: Session):
         if dic["err_code"] != 0:
             return {"svc_ids": ids, "err_code": dic["err_code"], "err_msg": dic["err_msg"]}
 
-        ids.extend(dic["add_ids"])
+        ids.extend(dic["svc_ids"])
         ids.sort()
     else:
         # 缩容
