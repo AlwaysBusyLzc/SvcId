@@ -48,8 +48,8 @@ engine = create_engine(
     pool_pre_ping=True,  # 自动检测连接是否存活
     echo=True,
     connect_args={
-        # "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-        "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        # "init_command": "SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE"
     }
 )
 sessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
