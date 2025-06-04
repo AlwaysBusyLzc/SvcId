@@ -41,9 +41,9 @@ with engine_create.connect() as connection:
 # 连接到数据库
 engine = create_engine(
     settings.database_url,
-    pool_size=20,       # 连接池容量
-    max_overflow=20,    # 溢出连接数量
-    pool_timeout=60,    # 超时时间
+    pool_size=40,       # 连接池容量
+    max_overflow=30,    # 溢出连接数量
+    pool_timeout=30,    # 超时时间
     pool_recycle=1800,   # 避免数据库主动断开空闲连接
     pool_pre_ping=True,  # 自动检测连接是否存活
     echo=True,
@@ -71,7 +71,7 @@ def retryable(func):
     否则回滚并抛出异常供 retry 捕获
     """
     @retry(
-        stop=stop_after_attempt(60),                # 最多重试次数
+        stop=stop_after_attempt(120),                # 最多重试次数
         wait=wait_fixed(1),                         # 等待时间
         retry=retry_if_exception_type((DBAPIError, OperationalError, TimeoutError, InternalError)),     # 抛出这些异常后重试
         reraise=True                                # 所有重试失败后抛出原始异常
@@ -120,13 +120,6 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     """
         # 给某个版本(game_id)的游戏的区服分配id列表， 同一个 game_id 下的的 svc_id不能重复
     """
-
-    # 锁定整个game_id区域
-    db.execute(text(
-        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
-    ), {'game_id': game_id})
-
-
     new_ids = []  # 新申请id
     reuse_ids = []  # 重用id
 
@@ -136,7 +129,7 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     # max_svc_id = max_item.svc_id if max_item else 0
     max_svc_id = (
                      db.query(func.max(SvcId.svc_id))
-                     .filter(SvcId.game_id == game_id).with_for_update()
+                     .filter(SvcId.game_id == game_id)
                      .scalar()  # 直接返回标量值
                  ) or 0  # 处理空值
 
@@ -149,7 +142,7 @@ def alloc_new_ids(game_id: int, area_id: int, count: int, db: Session):
     else:
         # 查询 need_reuse_count 个已删除的svc_id
         reuse_list = db.query(SvcId).filter(SvcId.game_id == game_id, SvcId.delete_time != None
-                                            ).order_by(SvcId.svc_id.asc()).limit(need_reuse_count).with_for_update().all()
+                                            ).order_by(SvcId.svc_id.asc()).limit(need_reuse_count).all()
 
         if len(reuse_list) < need_reuse_count:
             # raise Exception("数据库中可分配的进程实例id不足")
@@ -204,8 +197,14 @@ def svc_id_get(req: SvcIdGet, db: Session = Depends(session_scope)):
 
 @retryable
 def do_svc_id_get(req: SvcIdGet, db: Session):
+    # 锁定整个game_id区域
+    db.execute(text(
+        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
+    ), {'game_id': req.game_id})
+
+
     # 查询数据库
-    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).with_for_update().all()
+    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).all()
     if len(db_items) > 0:
         return {"svc_ids": [item.svc_id for item in db_items], "err_code": 0, "err_msg": ""}
 
@@ -228,10 +227,9 @@ def svc_id_recycle(req: SvcIdRecycle, db: Session = Depends(session_scope)):
 
 @retryable
 def do_svc_id_recycle(req: SvcIdRecycle, db: Session):
-    # 锁定整个game_id区域
     db.execute(text(
-        "SELECT 1 FROM svc_ids WHERE game_id = :game_id FOR UPDATE"
-    ), {'game_id': req.game_id})
+        "SELECT 1 FROM svc_ids WHERE game_id = :game_id AND area_id = :area_id FOR UPDATE"
+    ), {'game_id': req.game_id, 'area_id': req.area_id})
 
     # 批量更新操作（无需先查询）
     updated_count = (
@@ -270,7 +268,7 @@ def do_svc_id_resize(req: SvcIdResize, db: Session):
 
 
     # 查询数据库
-    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).order_by(SvcId.svc_id.asc()).with_for_update().all()
+    db_items = db.query(SvcId).filter(SvcId.game_id == req.game_id, SvcId.area_id == req.area_id, SvcId.delete_time == None).order_by(SvcId.svc_id.asc()).all()
     if len(db_items) == 0:
         return {"svc_ids": [], "err_code": 1, "err_msg": "当前区服未分配进程id，无法扩容或者缩容"}
 
