@@ -8,16 +8,16 @@ class SvcId(Base):
     __tablename__ = "svc_ids"
 
     id = Column(Integer, primary_key=True, autoincrement=True)  # 主键自增id
-    game_id = Column(Integer, nullable=False, index=True)
+    game_id = Column(Integer, nullable=False)
     area_id = Column(Integer, nullable=False)
     svc_id = Column(Integer, nullable=False)
     create_time = Column(DateTime, nullable=False)
     update_time = Column(DateTime, nullable=False)
-    delete_time = Column(DateTime, nullable=True, index=True)
+    delete_time = Column(DateTime, nullable=True)
 
     # 定义索引
     __table_args__ = (
-        Index("gameid_area_id", "game_id", "area_id"),  # 索引名、字段顺序
+        Index("gameid_areaid_deletetime", "game_id", "area_id", "delete_time"),
         Index("unique_game_svc_id", "game_id", "svc_id", unique=True),  # 索引名、字段顺序
     )
 
