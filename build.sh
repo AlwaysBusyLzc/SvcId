@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#apt update -y
-#apt install python3.10-venv
-#
-## 创建虚拟环境
-#python3 -m venv .venv
-#source .venv/bin/activate
-#
+apt update -y
+apt install python3.10-venv
+
+# 创建并激活虚拟环境
+python3 -m venv .venv
+source .venv/bin/activate
+
 ## 设置阿里云镜像源
 #cat << EOF > .venv/pip/pip.conf
 #[global]
@@ -26,6 +26,8 @@ pip install --progress-bar off --no-cache-dir -r requirements.txt -i https://mir
 pip install pyinstaller
 
 #pyinstaller --onefile --add-data ".env:." main.py
-pyinstaller --name svc_ids --onefile main.py
+#pyinstaller --name svc_ids --onefile main.py
+pyinstaller --name svc_ids --onefile --hidden-import tenacity main.py
+
 # 拷贝 .env
 cp .env dist/
